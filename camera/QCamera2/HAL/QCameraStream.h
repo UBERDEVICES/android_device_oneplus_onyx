@@ -1,4 +1,4 @@
-/* Copyright (c) 2012,2014 The Linux Foundataion. All rights reserved.
+/* Copyright (c) 2012,2014,2016 The Linux Foundataion. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -85,7 +85,6 @@ public:
     int32_t getFrameDimension(cam_dimension_t &dim);
     int32_t getFormat(cam_format_t &fmt);
     QCameraMemory *getStreamBufs() {return mStreamBufs;};
-    QCameraHeapMemory *getStreamInfoBuf() {return mStreamInfoBuf;};
     uint32_t getMyServerID();
     cam_stream_type_t getMyType();
     int32_t acquireStreamBufs();
@@ -103,10 +102,6 @@ public:
     int32_t configStream();
     bool isDeffered() const { return mDefferedAllocation; }
     void deleteStream();
-
-    uint8_t getBufferCount() { return mNumBufs; }
-    uint32_t getChannelHandle() { return mChannelHandle; }
-    int32_t getNumQueuedBuf();
 
     int mDumpFrame;
     int mDumpMetaFrame;
@@ -133,6 +128,7 @@ private:
 
     QCameraHeapMemory *mStreamInfoBuf;
     QCameraMemory *mStreamBufs;
+    QCameraMemory *mStreamBatchBufs;
     QCameraAllocator &mAllocator;
     mm_camera_buf_def_t *mBufDefs;
     cam_frame_len_offset_t mFrameLenOffset;

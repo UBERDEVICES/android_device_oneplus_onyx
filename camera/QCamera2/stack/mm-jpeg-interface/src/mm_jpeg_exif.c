@@ -36,8 +36,7 @@
 #define LOWER(a)               ((a) & 0xFFFF)
 #define UPPER(a)               (((a)>>16) & 0xFFFF)
 #define CHANGE_ENDIAN_16(a)  ((0x00FF & ((a)>>8)) | (0xFF00 & ((a)<<8)))
-#define ROUND(a) \
-        ((a >= 0) ? (uint32_t)(a + 0.5) : (uint32_t)(a - 0.5))
+#define ROUND(a)((a >= 0) ? (long)(a + 0.5) : (long)(a - 0.5))
 
 #define AAA_EXIF_BUF_SIZE   10
 #define AE_EXIF_SIZE        2
@@ -307,7 +306,7 @@ int process_sensor_data(cam_sensor_params_t *p_sensor_params,
     return 0;
   }
 
-  CDBG_HIGH("%s:%d] From metadata aperture = %f ", __func__, __LINE__,
+  ALOGD("%s:%d] From metadata aperture = %f ", __func__, __LINE__,
     p_sensor_params->aperture_value );
 
   val_rat.num = (uint32_t)(p_sensor_params->aperture_value * 100);
@@ -316,7 +315,6 @@ int process_sensor_data(cam_sensor_params_t *p_sensor_params,
   if (rc) {
     ALOGE("%s:%d]: Error adding Exif Entry", __func__, __LINE__);
   }
-
 
   short flash_tag = -1;
   uint8_t flash_fired = 0;
@@ -327,7 +325,7 @@ int process_sensor_data(cam_sensor_params_t *p_sensor_params,
 
   if (!p_cam_exif_params->flash_presence) {
     if (p_cam_exif_params->ui_flash_mode == CAM_FLASH_MODE_AUTO) {
-      CDBG_HIGH("%s %d: flashmode auto, take from sensor: %d", __func__, __LINE__,
+      ALOGD("%s %d: flashmode auto, take from sensor: %d", __func__, __LINE__,
         p_sensor_params->flash_mode);
       if(p_sensor_params->flash_mode == CAM_FLASH_MODE_ON)
         flash_fired = FLASH_FIRED;
@@ -336,8 +334,7 @@ int process_sensor_data(cam_sensor_params_t *p_sensor_params,
 
       flash_mode = CAMERA_FLASH_AUTO;
     } else {
-      CDBG_HIGH("%s %d: flashmode from ui: %d", __func__, __LINE__,
-                 p_cam_exif_params->ui_flash_mode);
+      ALOGD("%s %d: flashmode from ui: %d", __func__, __LINE__, p_cam_exif_params->ui_flash_mode);
       if (p_cam_exif_params->ui_flash_mode == CAM_FLASH_MODE_ON) {
         flash_mode = CAMERA_FLASH_COMPULSORY;
         flash_fired = FLASH_FIRED;
@@ -363,7 +360,7 @@ int process_sensor_data(cam_sensor_params_t *p_sensor_params,
     strobe_state | flash_mode |
     flash_presence | red_eye_mode;
 
-  CDBG_HIGH("%s %d: flash_tag: 0x%x", __func__, __LINE__, flash_tag);
+  ALOGD("%s %d: flash_tag: 0x%x", __func__, __LINE__, flash_tag);
 
 
   /*FLASH*/
@@ -408,12 +405,12 @@ int process_3a_data(cam_ae_params_t *p_ae_params, cam_awb_params_t *p_awb_params
     /* increment exif_byte_cnt, so that this info will be filled with 0s */
     exif_byte_cnt += AE_EXIF_SIZE;
   } else {
-    CDBG_HIGH("%s:%d] exp_time %f, iso_value %d exp idx: %d, lc: %d, gain: %f", __func__, __LINE__,
+    ALOGE("%s:%d] exp_time %f, iso_value %d exp idx: %d, lc: %d, gain: %f", __func__, __LINE__,
       p_ae_params->exp_time, p_ae_params->iso_value, p_ae_params->exp_index,
       p_ae_params->line_count, p_ae_params->real_gain);
 
     /* Exposure time */
-    if (0.0f >= p_ae_params->exp_time) {
+    if (p_ae_params->exp_time == 0) {
       val_rat.num = 0;
       val_rat.denom = 0;
     } else {
@@ -425,7 +422,7 @@ int process_3a_data(cam_ae_params_t *p_ae_params, cam_awb_params_t *p_awb_params
           val_rat.denom = ROUND(1.0/p_ae_params->exp_time);
       }
     }
-    CDBG_HIGH("%s: numer %d denom %d", __func__, val_rat.num, val_rat.denom );
+    ALOGD("%s: numer %d denom %d", __func__, val_rat.num, val_rat.denom );
 
     rc = addExifEntry(exif_info, EXIFTAGID_EXPOSURE_TIME, EXIF_RATIONAL,
       (sizeof(val_rat)/(8)), &val_rat);
@@ -437,7 +434,7 @@ int process_3a_data(cam_ae_params_t *p_ae_params, cam_awb_params_t *p_awb_params
     /* Shutter Speed*/
     if (p_ae_params->exp_time > 0) {
       shutter_speed_value = log10(1/p_ae_params->exp_time)/log10(2);
-      val_srat.num = (int32_t)(shutter_speed_value * 1000.0f);
+      val_srat.num = shutter_speed_value * 1000;
       val_srat.denom = 1000;
     } else {
       val_srat.num = 0;
@@ -451,7 +448,7 @@ int process_3a_data(cam_ae_params_t *p_ae_params, cam_awb_params_t *p_awb_params
 
     /* ISO */
     short val_short;
-    val_short = (short) p_ae_params->iso_value;
+    val_short = p_ae_params->iso_value;
     rc = addExifEntry(exif_info, EXIFTAGID_ISO_SPEED_RATING, EXIF_SHORT,
       sizeof(val_short)/2, &val_short);
     if (rc) {
@@ -459,7 +456,7 @@ int process_3a_data(cam_ae_params_t *p_ae_params, cam_awb_params_t *p_awb_params
     }
 
     /* Gain */
-    val_short = (short) p_ae_params->real_gain;
+    val_short = p_ae_params->real_gain;
     rc = addExifEntry(exif_info, EXIFTAGID_GAIN_CONTROL, EXIF_SHORT,
       sizeof(val_short)/2, &val_short);
     if (rc) {
@@ -470,7 +467,7 @@ int process_3a_data(cam_ae_params_t *p_ae_params, cam_awb_params_t *p_awb_params
     val_rat.num = p_ae_params->exp_index;
     val_rat.denom = 1;
 
-    CDBG_HIGH("%s: numer %d denom %d", __func__, val_rat.num, val_rat.denom );
+    ALOGD("%s: numer %d denom %d", __func__, val_rat.num, val_rat.denom );
 
     rc = addExifEntry(exif_info, EXIFTAGID_EXPOSURE_INDEX, EXIF_RATIONAL,
       (sizeof(val_rat)/(8)), &val_rat);

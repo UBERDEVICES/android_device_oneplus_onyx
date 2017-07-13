@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2015 The Linux Foundataion. All rights reserved.
+/* Copyright (c) 2012-2016 The Linux Foundataion. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -32,6 +32,16 @@
 #include <utils/Errors.h>
 #include "QCamera2HWI.h"
 #include "QCameraStream.h"
+
+// Media dependencies
+#ifdef USE_MEDIA_EXTENSIONS
+#include <media/hardware/HardwareAPI.h>
+typedef struct VideoNativeHandleMetadata media_metadata_buffer;
+#else
+#include "QComOMXMetadata.h"
+typedef struct encoder_media_buffer_type media_metadata_buffer;
+#endif
+
 
 #define CAMERA_MIN_ALLOCATED_BUFFERS     3
 
@@ -459,7 +469,7 @@ int32_t QCameraStream::calcOffset(cam_stream_info_t *streamInfo)
     int32_t rc = 0;
 
     cam_dimension_t dim = streamInfo->dim;
-    if (streamInfo->pp_config.feature_mask & CAM_QCOM_FEATURE_CPP &&
+    if (streamInfo->pp_config.feature_mask & CAM_QCOM_FEATURE_ROTATION &&
             streamInfo->stream_type != CAM_STREAM_TYPE_VIDEO) {
         if (streamInfo->pp_config.rotation == ROTATE_90 ||
                 streamInfo->pp_config.rotation == ROTATE_270) {
@@ -471,9 +481,8 @@ int32_t QCameraStream::calcOffset(cam_stream_info_t *streamInfo)
 
     switch (streamInfo->stream_type) {
     case CAM_STREAM_TYPE_PREVIEW:
-        rc = mm_stream_calc_offset_preview(streamInfo,
+        rc = mm_stream_calc_offset_preview(streamInfo->fmt,
                 &dim,
-                &mPaddingInfo,
                 &streamInfo->buf_planes);
         break;
     case CAM_STREAM_TYPE_POSTVIEW:
@@ -615,7 +624,7 @@ int32_t QCameraStream::processZoomDone(preview_stream_ops_t *previewWindow,
     int32_t rc = 0;
 
     if (!m_bActive) {
-        CDBG("%s : Stream not active", __func__);
+        ALOGV("%s : Stream not active", __func__);
         return NO_ERROR;
     }
 
@@ -656,12 +665,12 @@ int32_t QCameraStream::processZoomDone(preview_stream_ops_t *previewWindow,
  *==========================================================================*/
 int32_t QCameraStream::processDataNotify(mm_camera_super_buf_t *frame)
 {
-    CDBG("%s:\n", __func__);
+    ALOGV("%s:\n", __func__);
     if (m_bActive) {
         mDataQ.enqueue((void *)frame);
         return mProcTh.sendCmd(CAMERA_CMD_TYPE_DO_NEXT_JOB, FALSE, FALSE);
     } else {
-        CDBG("%s: Stream thread is not active, no ops here", __func__);
+        ALOGV("%s: Stream thread is not active, no ops here", __func__);
         bufDone(frame->bufs[0]->buf_idx);
         free(frame);
         return NO_ERROR;
@@ -683,7 +692,7 @@ int32_t QCameraStream::processDataNotify(mm_camera_super_buf_t *frame)
 void QCameraStream::dataNotifyCB(mm_camera_super_buf_t *recvd_frame,
                                  void *userdata)
 {
-    CDBG("%s:\n", __func__);
+    ALOGV("%s:\n", __func__);
     QCameraStream* stream = (QCameraStream *)userdata;
     if (stream == NULL ||
         recvd_frame == NULL ||
@@ -722,7 +731,7 @@ void *QCameraStream::dataProcRoutine(void *data)
     QCameraStream *pme = (QCameraStream *)data;
     QCameraCmdThread *cmdThread = &pme->mProcTh;
 
-    CDBG("%s: E", __func__);
+    ALOGV("%s: E", __func__);
     do {
         do {
             ret = cam_sem_wait(&cmdThread->cmd_sem);
@@ -738,7 +747,7 @@ void *QCameraStream::dataProcRoutine(void *data)
         switch (cmd) {
         case CAMERA_CMD_TYPE_DO_NEXT_JOB:
             {
-                CDBG("%s: Do next job", __func__);
+                ALOGV("%s: Do next job", __func__);
                 mm_camera_super_buf_t *frame =
                     (mm_camera_super_buf_t *)pme->mDataQ.dequeue();
                 if (NULL != frame) {
@@ -753,7 +762,7 @@ void *QCameraStream::dataProcRoutine(void *data)
             }
             break;
         case CAMERA_CMD_TYPE_EXIT:
-            CDBG("%s: Exit", __func__);
+            ALOGV("%s: Exit", __func__);
             /* flush data buf queue */
             pme->mDataQ.flush();
             running = 0;
@@ -762,7 +771,7 @@ void *QCameraStream::dataProcRoutine(void *data)
             break;
         }
     } while (running);
-    CDBG("%s: X", __func__);
+    ALOGV("%s: X", __func__);
     return NULL;
 }
 
@@ -808,35 +817,51 @@ int32_t QCameraStream::bufDone(int index)
 int32_t QCameraStream::bufDone(const void *opaque, bool isMetaData)
 {
     int32_t rc = NO_ERROR;
+    int index = -1;
 
-    int index = mStreamBufs->getMatchBufIndex(opaque, isMetaData);
-    if (index == -1 || index >= mNumBufs || mBufDefs == NULL) {
-        ALOGE("%s: Cannot find buf for opaque data = %p", __func__, opaque);
-        return BAD_INDEX;
+    QCameraVideoMemory *lVideoMem = NULL;
+    if (mStreamInfo != NULL &&
+        mStreamInfo->streaming_mode == CAM_STREAMING_MODE_BATCH) {
+            index = mStreamBatchBufs->getMatchBufIndex(opaque, TRUE);
+            lVideoMem = (QCameraVideoMemory *)mStreamBatchBufs;
+            if (index == -1 || index >= mNumBufs || mBufDefs == NULL) {
+                ALOGE("%s: Cannot find buf for opaque data = %p", __func__, opaque);
+                return BAD_INDEX;
+            }
+            camera_memory_t *video_mem = mStreamBatchBufs->getMemory(index, true);
+            if (video_mem != NULL) {
+                media_metadata_buffer * packet =
+                    (media_metadata_buffer *)video_mem->data;
+                native_handle_t *nh = const_cast<native_handle_t *>(packet->pHandle);
+                if (NULL != nh) {
+                    if (native_handle_delete(nh)) {
+                        ALOGE("%s: Unable to delete native handle", __func__);
+                    }
+                } else {
+                    ALOGE("%s : native handle not available", __func__);
+                }
+            }
+        } else {
+            index = mStreamBufs->getMatchBufIndex(opaque, isMetaData);
+            lVideoMem = (QCameraVideoMemory *)mStreamBufs;
+            if (index == -1 || index >= mNumBufs || mBufDefs == NULL) {
+                ALOGE("%s: Cannot find buf for opaque data = %p", __func__, opaque);
+                return BAD_INDEX;
+            }
+            ALOGD("%s: Buffer Index = %d, Frame Idx = %d", __func__, index,
+                    mBufDefs[index].frame_idx);
+        }
+    //Close and delete duplicated native handle and FD's.
+    if (lVideoMem != NULL) {
+        rc = lVideoMem->closeNativeHandle(opaque, isMetaData);
+        if (rc != NO_ERROR) {
+            ALOGE("Invalid video metadata");
+            return rc;
+        }
+    } else {
+        ALOGE("Possible FD leak. Release recording called after stop");
     }
-    CDBG("%s: Buffer Index = %d, Frame Idx = %d", __func__, index, mBufDefs[index].frame_idx);
     rc = bufDone(index);
-    return rc;
-}
-
-/*===========================================================================
- * FUNCTION   : getNumQueuedBuf
- *
- * DESCRIPTION: return queued buffer count
- *
- * PARAMETERS : None
- *
- * RETURN     : queued buffer count
- *==========================================================================*/
-int32_t QCameraStream::getNumQueuedBuf()
-{
-    int32_t rc = -1;
-    if (mHandle > 0) {
-        rc = mCamOps->get_queued_buf_count(mCamHandle, mChannelHandle, mHandle);
-    }
-    if (rc == -1) {
-        ALOGE("%s: stream is not in active state. Invalid operation", __func__);
-    }
     return rc;
 }
 
@@ -969,7 +994,7 @@ int32_t QCameraStream::getBufs(cam_frame_len_offset_t *offset,
         pthread_mutex_lock(&m_lock);
         wait_for_cond = TRUE;
         pthread_mutex_unlock(&m_lock);
-        CDBG_HIGH("%s: Still need to allocate %d buffers",
+        ALOGD("%s: Still need to allocate %d buffers",
               __func__, mNumBufsNeedAlloc);
         // remember memops table
         m_MemOpsTbl = *ops_tbl;
@@ -1135,7 +1160,7 @@ void *QCameraStream::BufAllocRoutine(void *data)
     QCameraStream *pme = (QCameraStream *)data;
     int32_t rc = NO_ERROR;
 
-    CDBG_HIGH("%s: E", __func__);
+    ALOGD("%s: E", __func__);
     pme->cond_wait();
     if (pme->mNumBufsNeedAlloc > 0) {
         uint8_t numBufAlloc = pme->mNumBufs - pme->mNumBufsNeedAlloc;
@@ -1162,7 +1187,7 @@ void *QCameraStream::BufAllocRoutine(void *data)
             pme->mNumBufsNeedAlloc = 0;
         }
     }
-    CDBG_HIGH("%s: X", __func__);
+    ALOGD("%s: X", __func__);
     return NULL;
 }
 
@@ -1217,10 +1242,10 @@ int32_t QCameraStream::putBufs(mm_camera_map_unmap_ops_tbl_t *ops_tbl)
     int rc = NO_ERROR;
 
     if (mBufAllocPid != 0) {
-        CDBG_HIGH("%s: wait for buf allocation thread dead", __func__);
+        ALOGD("%s: wait for buf allocation thread dead", __func__);
         pthread_join(mBufAllocPid, NULL);
         mBufAllocPid = 0;
-        CDBG_HIGH("%s: return from buf allocation thread", __func__);
+        ALOGD("%s: return from buf allocation thread", __func__);
     }
 
     for (int i = 0; i < mNumBufs; i++) {
@@ -1310,12 +1335,6 @@ bool QCameraStream::isOrignalTypeOf(cam_stream_type_t type)
         mStreamInfo->stream_type == CAM_STREAM_TYPE_OFFLINE_PROC &&
         mStreamInfo->reprocess_config.pp_type == CAM_ONLINE_REPROCESS_TYPE &&
         mStreamInfo->reprocess_config.online.input_stream_type == type) {
-        return true;
-    } else if (
-        mStreamInfo != NULL &&
-        mStreamInfo->stream_type == CAM_STREAM_TYPE_OFFLINE_PROC &&
-        mStreamInfo->reprocess_config.pp_type == CAM_OFFLINE_REPROCESS_TYPE &&
-        mStreamInfo->reprocess_config.offline.input_type == type) {
         return true;
     } else {
         return false;
